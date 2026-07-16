@@ -1,0 +1,7 @@
+allowBuilds:
+  sharp: true
+
+# sharp is Next.js's native image optimizer — legit dependency, allow the
+# post-install build script to run.
+onlyBuiltDependencies:
+  - sharp

@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+/*
+ * Tell Tailwind v4 to scan the shared UI primitives in lib/ui so their
+ * utility classes are included in this app's CSS bundle.
+ */
+@source "../lib/ui/**/*.{ts,tsx}";
+
+/*
+ * Owner Toolkit design tokens.
+ *
+ * App-level design decisions live here as CSS custom properties.
+ * The lib/tokens/ TypeScript module mirrors these values for programmatic
+ * access (color pickers, previews, contrast checks). Keep the two in sync.
+ */
+@theme {
+  /* ------- fonts ------- */
+  --font-sans:
+    var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  --font-display:
+    var(--font-jakarta), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+  /* ------- neutrals (warm gray) ------- */
+  --color-neutral-0: hsl(0 0% 100%);
+  --color-neutral-25: hsl(30 20% 99%);
+  --color-neutral-50: hsl(30 12% 97%);
+  --color-neutral-100: hsl(30 8% 94%);
+  --color-neutral-200: hsl(30 6% 88%);
+  --color-neutral-300: hsl(30 5% 80%);
+  --color-neutral-400: hsl(30 4% 62%);
+  --color-neutral-500: hsl(30 4% 46%);
+  --color-neutral-600: hsl(30 5% 34%);
+  --color-neutral-700: hsl(30 6% 24%);
+  --color-neutral-800: hsl(30 7% 16%);
+  --color-neutral-900: hsl(30 8% 10%);
+  --color-neutral-1000: hsl(30 10% 6%);
+
+  /* ------- ink (text) ------- */
+  --color-ink-strong: var(--color-neutral-900);
+  --color-ink: var(--color-neutral-800);
+  --color-ink-soft: var(--color-neutral-600);
+  --color-ink-muted: var(--color-neutral-500);
+  --color-ink-placeholder: var(--color-neutral-400);
+  --color-ink-inverse: var(--color-neutral-0);
+
+  /* ------- surfaces ------- */
+  --color-surface: var(--color-neutral-0);
+  --color-surface-canvas: var(--color-neutral-25);
+  --color-surface-raised: var(--color-neutral-0);
+  --color-surface-sunken: var(--color-neutral-50);
+
+  /* ------- lines ------- */
+  --color-line-subtle: var(--color-neutral-100);
+  --color-line: var(--color-neutral-200);
+  --color-line-strong: var(--color-neutral-300);
+  --color-line-focus: hsl(220 90% 56%);
+
+  /* ------- semantic ------- */
+  --color-semantic-success-subtle: hsl(152 60% 96%);
+  --color-semantic-success: hsl(152 60% 36%);
+  --color-semantic-success-strong: hsl(152 68% 24%);
+  --color-semantic-warning-subtle: hsl(38 92% 96%);
+  --color-semantic-warning: hsl(30 88% 44%);
+  --color-semantic-warning-strong: hsl(24 84% 32%);
+  --color-semantic-danger-subtle: hsl(4 82% 97%);
+  --color-semantic-danger: hsl(4 74% 52%);
+  --color-semantic-danger-strong: hsl(4 74% 38%);
+  --color-semantic-info-subtle: hsl(210 90% 97%);
+  --color-semantic-info: hsl(210 82% 48%);
+  --color-semantic-info-strong: hsl(210 82% 34%);
+
+  /* ------- radii ------- */
+  --radius-none: 0px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
+  --radius-3xl: 36px;
+  --radius-full: 9999px;
+
+  /* ------- shadows ------- */
+  --shadow-xs: 0 1px 2px 0 hsl(30 8% 10% / 0.04);
+  --shadow-sm: 0 1px 3px 0 hsl(30 8% 10% / 0.05), 0 1px 2px -1px hsl(30 8% 10% / 0.05);
+  --shadow-md: 0 4px 6px -1px hsl(30 8% 10% / 0.06), 0 2px 4px -2px hsl(30 8% 10% / 0.05);
+  --shadow-lg: 0 10px 15px -3px hsl(30 8% 10% / 0.07), 0 4px 6px -4px hsl(30 8% 10% / 0.05);
+  --shadow-xl: 0 20px 25px -5px hsl(30 8% 10% / 0.08), 0 8px 10px -6px hsl(30 8% 10% / 0.05);
+
+  /* ------- motion ------- */
+  --motion-fast: 140ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --motion-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-emphasized: cubic-bezier(0.3, 0, 0, 1);
+}
+
+/* ------- baseline ------- */
+html,
+body {
+  background: var(--color-surface-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-line-focus);
+  color: var(--color-ink-inverse);
+}
+
+/*
+ * Slide-over animations for the dashboard inquiry detail panel.
+ * Radix Dialog stamps [data-state="open"|"closed"] on the overlay + content —
+ * we target that directly so no plugin is required.
+ */
+@keyframes ot-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ot-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes ot-slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes ot-slide-out-right {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+.slide-over-overlay[data-state="open"] {
+  animation: ot-fade-in 200ms var(--motion-standard) both;
+}
+.slide-over-overlay[data-state="closed"] {
+  animation: ot-fade-out 150ms var(--motion-standard) both;
+}
+.slide-over-content[data-state="open"] {
+  animation: ot-slide-in-right 240ms var(--motion-emphasized) both;
+}
+.slide-over-content[data-state="closed"] {
+  animation: ot-slide-out-right 180ms var(--motion-standard) both;
+}
