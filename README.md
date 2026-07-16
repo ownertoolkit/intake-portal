@@ -1,5 +1,7 @@
 # Customer Intake Portal
 
+> **New here? Open [`START-HERE.md`](./START-HERE.md) first.** It walks you through publishing this to the internet in about 30 minutes, using ChatGPT as your guide.
+
 A beautifully designed inquiry portal for your business. Deploy your own copy in a few minutes — the finished app lives in your GitHub, Vercel, and Supabase accounts. You own it forever.
 
 Part of **[The Owner Toolkit](https://theownertoolkit.co)** — a growing collection of professionally designed business software that owners can deploy and own.
