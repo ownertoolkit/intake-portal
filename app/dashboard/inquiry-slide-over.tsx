@@ -3,30 +3,34 @@
 import * as React from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Textarea, cn } from "@/lib/ui";
+import { portalConfig, type PortalField } from "@/lib/portal/config";
+import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
+import type { StoredFile } from "./types";
 import { STATUS_META, STATUS_ORDER, type Inquiry, type Status } from "./types";
+
+const BUCKET = "inquiry-files";
+const NOTE_SAVE_DEBOUNCE_MS = 600;
+const SIGNED_URL_TTL_SECONDS = 60 * 30; // 30 min
 
 /**
  * InquirySlideOver — the deep view of a single inquiry.
  *
- * Slides in from the right using Radix Dialog (which gives us the focus
- * trap, ESC-to-close, and ARIA machinery for free). Everything the owner
- * needs to review an inquiry lives here: contact info with copy-to-clipboard,
- * the full submission, uploaded files, a status changer, and a private
- * notes textarea.
+ * Reads the current portal.config.ts to know how to display each answer:
+ * contact roles surface in the Contact section, everything else falls into
+ * the Submission section in wizard order, and file uploads are their own
+ * section with signed download URLs. Notes are stored in a separate table,
+ * autosaved as the owner types.
  */
-
 export function InquirySlideOver({
   inquiry,
   open,
   onOpenChange,
   onStatusChange,
-  onNotesChange,
 }: {
   inquiry: Inquiry | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onStatusChange: (id: string, status: Status) => void;
-  onNotesChange: (id: string, notes: string) => void;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -46,7 +50,6 @@ export function InquirySlideOver({
             <SlideOverBody
               inquiry={inquiry}
               onStatusChange={(s) => onStatusChange(inquiry.id, s)}
-              onNotesChange={(n) => onNotesChange(inquiry.id, n)}
               onClose={() => onOpenChange(false)}
             />
           ) : null}
@@ -63,29 +66,32 @@ export function InquirySlideOver({
 function SlideOverBody({
   inquiry,
   onStatusChange,
-  onNotesChange,
   onClose,
 }: {
   inquiry: Inquiry;
   onStatusChange: (s: Status) => void;
-  onNotesChange: (n: string) => void;
   onClose: () => void;
 }) {
+  const summary = summarizeInquiry(inquiry);
+  const displayTitle =
+    inquiry.customerName || inquiry.customerEmail || "Anonymous";
+
   return (
     <>
-      {/* Header */}
       <div className="px-8 pt-8 pb-6 border-b border-[var(--color-line-subtle)]">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <p className="font-sans text-xs font-medium uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
-              Inquiry · {formatDate(inquiry.submittedAt)}
+              Inquiry · {formatDate(inquiry.createdAt)}
             </p>
             <h2 className="mt-3 font-display text-3xl font-semibold tracking-[-0.015em] text-[var(--color-ink-strong)] leading-tight">
-              {inquiry.customerName}
+              {displayTitle}
             </h2>
-            <p className="mt-2 text-sm text-[var(--color-ink-soft)]">
-              {inquiry.serviceType}
-            </p>
+            {summary.headline ? (
+              <p className="mt-2 text-sm text-[var(--color-ink-soft)]">
+                {summary.headline}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"
@@ -102,19 +108,22 @@ function SlideOverBody({
         </div>
       </div>
 
-      {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto">
-        <ContactSection inquiry={inquiry} />
-        <Divider />
-        <SubmissionSection inquiry={inquiry} />
-        {inquiry.files && inquiry.files.length > 0 ? (
+        <ContactSection inquiry={inquiry} rows={summary.contact} />
+        {summary.submission.length > 0 ? (
           <>
             <Divider />
-            <FilesSection files={inquiry.files} />
+            <SubmissionSection rows={summary.submission} />
+          </>
+        ) : null}
+        {summary.files.length > 0 ? (
+          <>
+            <Divider />
+            <FilesSection files={summary.files} />
           </>
         ) : null}
         <Divider />
-        <NotesSection value={inquiry.ownerNotes} onChange={onNotesChange} />
+        <NotesSection inquiryId={inquiry.id} />
       </div>
     </>
   );
@@ -139,6 +148,102 @@ function Section({
       {children}
     </section>
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          Inquiry summarizer                                */
+/* -------------------------------------------------------------------------- */
+
+interface ContactRowData {
+  label: string;
+  value: string;
+  copyable?: boolean;
+}
+
+interface SubmissionRowData {
+  label: string;
+  value: string;
+}
+
+interface Summary {
+  headline: string | null;
+  contact: ContactRowData[];
+  submission: SubmissionRowData[];
+  files: StoredFile[];
+}
+
+function summarizeInquiry(inquiry: Inquiry): Summary {
+  const enabled = portalConfig.fields.filter((f) => f.enabled);
+
+  const contact: ContactRowData[] = [];
+  if (inquiry.customerName) {
+    contact.push({ label: "Name", value: inquiry.customerName });
+  }
+  if (inquiry.customerEmail) {
+    contact.push({ label: "Email", value: inquiry.customerEmail, copyable: true });
+  }
+  if (inquiry.customerPhone) {
+    contact.push({ label: "Phone", value: inquiry.customerPhone, copyable: true });
+  }
+  // Company + any other role-tagged fields (e.g. customer_company)
+  for (const field of enabled) {
+    if (!field.role) continue;
+    if (field.role === "customer_name" || field.role === "customer_email" || field.role === "customer_phone") continue;
+    const value = readStringAnswer(inquiry, field.id);
+    if (value) contact.push({ label: field.label, value });
+  }
+
+  const submission: SubmissionRowData[] = [];
+  const files: StoredFile[] = [];
+
+  for (const field of enabled) {
+    if (field.role) continue;
+    if (field.type === "file_upload") {
+      const list = readFileArray(inquiry, field.id);
+      files.push(...list);
+      continue;
+    }
+    const value = readStringAnswer(inquiry, field.id);
+    if (value) submission.push({ label: field.label, value });
+  }
+
+  // Headline: the first meaningful non-role answer (short then long).
+  let headline: string | null = null;
+  for (const field of enabled) {
+    if (field.role) continue;
+    if (field.type !== "short_answer" && field.type !== "long_answer") continue;
+    const value = readStringAnswer(inquiry, field.id);
+    if (value) {
+      headline = value.length > 90 ? value.slice(0, 90).trimEnd() + "…" : value;
+      break;
+    }
+  }
+
+  return { headline, contact, submission, files };
+}
+
+function readStringAnswer(inquiry: Inquiry, fieldId: string): string | null {
+  const raw = inquiry.answers[fieldId];
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  return null;
+}
+
+function readFileArray(inquiry: Inquiry, fieldId: string): StoredFile[] {
+  const raw = inquiry.answers[fieldId];
+  if (!Array.isArray(raw)) return [];
+  const result: StoredFile[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.name !== "string" || typeof e.path !== "string") continue;
+    result.push({
+      name: e.name,
+      path: e.path,
+      size: typeof e.size === "number" ? e.size : 0,
+      contentType: typeof e.contentType === "string" ? e.contentType : "application/octet-stream",
+    });
+  }
+  return result;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -224,17 +329,20 @@ function StatusChanger({
 /*                                  Sections                                  */
 /* -------------------------------------------------------------------------- */
 
-function ContactSection({ inquiry }: { inquiry: Inquiry }) {
+function ContactSection({
+  inquiry: _inquiry,
+  rows,
+}: {
+  inquiry: Inquiry;
+  rows: ContactRowData[];
+}) {
+  if (rows.length === 0) return null;
   return (
     <Section eyebrow="Contact">
       <dl className="space-y-3">
-        <ContactRow label="Name" value={inquiry.customerName} />
-        <ContactRow label="Email" value={inquiry.email} copyable />
-        {inquiry.phone ? <ContactRow label="Phone" value={inquiry.phone} copyable /> : null}
-        {inquiry.company ? <ContactRow label="Company" value={inquiry.company} /> : null}
-        {inquiry.preferredContact ? (
-          <ContactRow label="Prefers" value={inquiry.preferredContact} />
-        ) : null}
+        {rows.map((row) => (
+          <ContactRow key={row.label} label={row.label} value={row.value} copyable={row.copyable} />
+        ))}
       </dl>
     </Section>
   );
@@ -287,16 +395,7 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
-function SubmissionSection({ inquiry }: { inquiry: Inquiry }) {
-  const rows: { label: string; value: string }[] = [
-    { label: "Service or project type", value: inquiry.serviceType },
-    { label: "Project details", value: inquiry.projectDetails },
-  ];
-  if (inquiry.budget) rows.push({ label: "Budget", value: inquiry.budget });
-  if (inquiry.timeline) rows.push({ label: "Desired timeline", value: inquiry.timeline });
-  if (inquiry.otherNotes)
-    rows.push({ label: "Anything else", value: inquiry.otherNotes });
-
+function SubmissionSection({ rows }: { rows: SubmissionRowData[] }) {
   return (
     <Section eyebrow="Submission">
       <dl className="space-y-6">
@@ -313,58 +412,195 @@ function SubmissionSection({ inquiry }: { inquiry: Inquiry }) {
   );
 }
 
-function FilesSection({ files }: { files: { name: string; size: string }[] }) {
+function FilesSection({ files }: { files: StoredFile[] }) {
   return (
     <Section eyebrow="Files">
       <ul className="space-y-2">
         {files.map((f) => (
-          <li
-            key={f.name}
-            className="flex items-center gap-3 px-3.5 py-3 rounded-[var(--radius-md)] border border-[var(--color-line-subtle)] hover:border-[var(--color-line)] hover:bg-[var(--color-surface-sunken)] transition-colors"
-          >
-            <span className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] bg-[var(--color-surface-canvas)] border border-[var(--color-line-subtle)] flex items-center justify-center text-[var(--color-ink-muted)]">
-              <FileIcon />
-            </span>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-[var(--color-ink)] truncate">
-                {f.name}
-              </p>
-              <p className="text-[11px] text-[var(--color-ink-muted)] mt-0.5">{f.size}</p>
-            </div>
-            <button
-              type="button"
-              className="text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] px-2 py-1 rounded-[var(--radius-sm)]"
-            >
-              Download
-            </button>
-          </li>
+          <FileRow key={f.path} file={f} />
         ))}
       </ul>
     </Section>
   );
 }
 
-function NotesSection({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-}) {
+function FileRow({ file }: { file: StoredFile }) {
+  const [downloading, setDownloading] = React.useState(false);
+  const [failedMessage, setFailedMessage] = React.useState<string | null>(null);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    setFailedMessage(null);
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.storage
+        .from(BUCKET)
+        .createSignedUrl(file.path, SIGNED_URL_TTL_SECONDS, { download: file.name });
+      if (error || !data?.signedUrl) throw error ?? new Error("No URL returned");
+      window.open(data.signedUrl, "_blank", "noopener");
+    } catch (err) {
+      console.error(err);
+      setFailedMessage("This file isn't available. It may have failed to upload.");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <li
+      className="flex items-center gap-3 px-3.5 py-3 rounded-[var(--radius-md)] border border-[var(--color-line-subtle)] hover:border-[var(--color-line)] hover:bg-[var(--color-surface-sunken)] transition-colors"
+    >
+      <span className="h-9 w-9 shrink-0 rounded-[var(--radius-sm)] bg-[var(--color-surface-canvas)] border border-[var(--color-line-subtle)] flex items-center justify-center text-[var(--color-ink-muted)]">
+        <FileIcon />
+      </span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-[var(--color-ink)] truncate">
+          {file.name}
+        </p>
+        <p className="text-[11px] text-[var(--color-ink-muted)] mt-0.5">
+          {formatSize(file.size)}
+          {failedMessage ? <span className="text-[var(--color-semantic-warning-strong)]"> · {failedMessage}</span> : null}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={handleDownload}
+        disabled={downloading}
+        className="text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] px-2 py-1 rounded-[var(--radius-sm)] disabled:opacity-60"
+      >
+        {downloading ? "Preparing…" : "Download"}
+      </button>
+    </li>
+  );
+}
+
+function formatSize(bytes: number): string {
+  if (!bytes) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                Notes section                               */
+/* -------------------------------------------------------------------------- */
+
+function NotesSection({ inquiryId }: { inquiryId: string }) {
+  const supabase = React.useMemo(() => createSupabaseBrowserClient(), []);
+
+  const [noteId, setNoteId] = React.useState<string | null>(null);
+  const [value, setValue] = React.useState("");
+  const [ready, setReady] = React.useState(false);
+  const [saveState, setSaveState] = React.useState<"idle" | "saving" | "saved" | "error">("idle");
+  const timeoutRef = React.useRef<number | null>(null);
+  const inflightValueRef = React.useRef<string>("");
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setReady(false);
+    setValue("");
+    setNoteId(null);
+    setSaveState("idle");
+    (async () => {
+      const { data, error } = await supabase
+        .from("notes")
+        .select("id, body")
+        .eq("inquiry_id", inquiryId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error) {
+        console.error("[notes] load failed:", error);
+      } else if (data) {
+        setNoteId(data.id);
+        setValue(data.body ?? "");
+      }
+      setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [inquiryId, supabase]);
+
+  const scheduleSave = React.useCallback(
+    (next: string) => {
+      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = window.setTimeout(async () => {
+        if (inflightValueRef.current === next) return;
+        inflightValueRef.current = next;
+        setSaveState("saving");
+        try {
+          const { data: user } = await supabase.auth.getUser();
+          if (!user.user) {
+            setSaveState("error");
+            return;
+          }
+          if (noteId) {
+            const { error } = await supabase
+              .from("notes")
+              .update({ body: next })
+              .eq("id", noteId);
+            if (error) throw error;
+          } else {
+            const { data, error } = await supabase
+              .from("notes")
+              .insert({ inquiry_id: inquiryId, author_id: user.user.id, body: next })
+              .select("id")
+              .single();
+            if (error) throw error;
+            setNoteId(data.id);
+          }
+          setSaveState("saved");
+        } catch (err) {
+          console.error("[notes] save failed:", err);
+          setSaveState("error");
+        }
+      }, NOTE_SAVE_DEBOUNCE_MS);
+    },
+    [inquiryId, noteId, supabase],
+  );
+
+  React.useEffect(() => {
+    return () => {
+      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
   return (
     <Section eyebrow="Private notes">
       <Textarea
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          const v = e.target.value;
+          setValue(v);
+          scheduleSave(v);
+        }}
         placeholder="Only you can see these."
         rows={4}
         className="text-sm"
+        disabled={!ready}
       />
       <p className="text-[11px] text-[var(--color-ink-muted)] mt-2">
-        Saved automatically.
+        {saveHint(saveState, ready)}
       </p>
     </Section>
   );
+}
+
+function saveHint(state: "idle" | "saving" | "saved" | "error", ready: boolean): string {
+  if (!ready) return "Loading…";
+  switch (state) {
+    case "saving":
+      return "Saving…";
+    case "saved":
+      return "Saved.";
+    case "error":
+      return "Couldn't save. Try again in a moment.";
+    case "idle":
+    default:
+      return "Saved automatically.";
+  }
 }
 
 /* -------------------------------------------------------------------------- */

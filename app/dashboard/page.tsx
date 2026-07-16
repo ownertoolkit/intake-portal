@@ -23,8 +23,9 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@/lib/ui";
+import { portalConfig } from "@/lib/portal/config";
+import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { STATUS_META, STATUS_ORDER, type Inquiry, type Status } from "./types";
-import { loadInquiries, resetInquiries, saveInquiries } from "./storage";
 import { InquirySlideOver } from "./inquiry-slide-over";
 
 /* -------------------------------------------------------------------------- */
@@ -33,22 +34,58 @@ import { InquirySlideOver } from "./inquiry-slide-over";
 
 type StatusFilter = "all" | Status;
 
+interface InquiryRow {
+  id: string;
+  status: Status;
+  customer_name: string | null;
+  customer_email: string | null;
+  customer_phone: string | null;
+  answers: Record<string, unknown>;
+  created_at: string;
+}
+
+function rowToInquiry(row: InquiryRow): Inquiry {
+  return {
+    id: row.id,
+    status: row.status,
+    customerName: row.customer_name,
+    customerEmail: row.customer_email,
+    customerPhone: row.customer_phone,
+    answers: row.answers ?? {},
+    createdAt: row.created_at,
+  };
+}
+
 export default function DashboardPage() {
   const [ready, setReady] = React.useState(false);
   const [inquiries, setInquiries] = React.useState<Inquiry[]>([]);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [search, setSearch] = React.useState("");
   const [filter, setFilter] = React.useState<StatusFilter>("all");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [activeDragId, setActiveDragId] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    setInquiries(loadInquiries());
-    setReady(true);
-  }, []);
+  const supabase = React.useMemo(() => createSupabaseBrowserClient(), []);
 
   React.useEffect(() => {
-    if (ready) saveInquiries(inquiries);
-  }, [inquiries, ready]);
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("inquiries")
+        .select("id, status, customer_name, customer_email, customer_phone, answers, created_at")
+        .order("created_at", { ascending: false });
+      if (cancelled) return;
+      if (error) {
+        setLoadError(error.message);
+      } else {
+        setInquiries((data ?? []).map((row) => rowToInquiry(row as InquiryRow)));
+      }
+      setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
 
   const selectedInquiry = React.useMemo(
     () => inquiries.find((i) => i.id === selectedId) ?? null,
@@ -65,8 +102,8 @@ export default function DashboardPage() {
     if (!q) return inquiries;
     return inquiries.filter(
       (i) =>
-        i.customerName.toLowerCase().includes(q) ||
-        i.email.toLowerCase().includes(q),
+        (i.customerName ?? "").toLowerCase().includes(q) ||
+        (i.customerEmail ?? "").toLowerCase().includes(q),
     );
   }, [inquiries, search]);
 
@@ -79,8 +116,18 @@ export default function DashboardPage() {
     }));
   }, [visibleInquiries, filter]);
 
-  const updateInquiry = (id: string, patch: Partial<Inquiry>) => {
-    setInquiries((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+  const updateStatus = async (id: string, status: Status) => {
+    setInquiries((prev) =>
+      prev.map((i) => (i.id === id ? { ...i, status } : i)),
+    );
+    const { error } = await supabase
+      .from("inquiries")
+      .update({ status })
+      .eq("id", id);
+    if (error) {
+      console.error("[dashboard] status update failed:", error);
+      // Optimistic update stays; the next load will reconcile.
+    }
   };
 
   const sensors = useSensors(
@@ -116,29 +163,27 @@ export default function DashboardPage() {
       if (activeIndex < 0) return prev;
 
       if (activeContainer === overContainer) {
-        // Reorder within same column
         const overIndex = prev.findIndex((i) => i.id === overId);
         if (overIndex < 0) return prev;
         return arrayMove(prev, activeIndex, overIndex);
       }
 
-      // Move to new column — insert either before the overlapping card, or
-      // at the end if the drop target is the column itself.
       const next = prev.map((i, idx) =>
         idx === activeIndex ? { ...i, status: overContainer } : i,
       );
       const moved = next.splice(activeIndex, 1)[0]!;
-      const insertIndex =
-        STATUS_ORDER.includes(overId as Status)
-          ? next.length
-          : next.findIndex((i) => i.id === overId);
+      const insertIndex = STATUS_ORDER.includes(overId as Status)
+        ? next.length
+        : next.findIndex((i) => i.id === overId);
       next.splice(insertIndex < 0 ? next.length : insertIndex, 0, moved);
       return next;
     });
+
+    if (activeContainer !== overContainer) {
+      void updateStatus(activeId, overContainer);
+    }
   };
 
-  // Suspend rendering the columns until localStorage has hydrated to avoid
-  // an SSR/CSR mismatch on the sample data.
   if (!ready) {
     return <main className="min-h-screen bg-[var(--color-surface-canvas)]" />;
   }
@@ -151,7 +196,7 @@ export default function DashboardPage() {
         <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-6">
           <div>
             <p className="font-sans text-xs font-medium uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
-              Customer Intake Portal
+              {portalConfig.businessName}
             </p>
             <h1 className="mt-4 font-display text-4xl md:text-5xl font-semibold tracking-[-0.03em] text-[var(--color-ink-strong)] leading-[1]">
               Inquiries
@@ -164,7 +209,14 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Board */}
+      {loadError ? (
+        <div className="px-8 md:px-12 max-w-[1600px] w-full mx-auto mb-4">
+          <p className="rounded-[var(--radius-md)] border border-[var(--color-semantic-warning)] bg-[var(--color-semantic-warning-subtle)] px-4 py-3 text-sm text-[var(--color-semantic-warning-strong)]">
+            We couldn't load inquiries: {loadError}
+          </p>
+        </div>
+      ) : null}
+
       <ScrollableBoard>
         <DndContext
           sensors={sensors}
@@ -188,7 +240,9 @@ export default function DashboardPage() {
           </DragOverlay>
         </DndContext>
 
-        {search && visibleInquiries.length === 0 ? (
+        {inquiries.length === 0 && !loadError ? (
+          <EmptyBoard />
+        ) : search && visibleInquiries.length === 0 ? (
           <div className="mt-16 text-center">
             <p className="text-sm text-[var(--color-ink-muted)]">
               No inquiries match &ldquo;{search}&rdquo;.
@@ -197,7 +251,7 @@ export default function DashboardPage() {
         ) : null}
       </ScrollableBoard>
 
-      <Footer onReset={() => setInquiries(resetInquiries())} />
+      <Footer />
 
       <InquirySlideOver
         inquiry={selectedInquiry}
@@ -205,10 +259,29 @@ export default function DashboardPage() {
         onOpenChange={(open) => {
           if (!open) setSelectedId(null);
         }}
-        onStatusChange={(id, status) => updateInquiry(id, { status })}
-        onNotesChange={(id, ownerNotes) => updateInquiry(id, { ownerNotes })}
+        onStatusChange={(id, status) => void updateStatus(id, status)}
       />
     </main>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                Empty board                                 */
+/* -------------------------------------------------------------------------- */
+
+function EmptyBoard() {
+  return (
+    <div className="mt-20 text-center">
+      <p className="font-sans text-xs font-medium uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
+        Nothing yet
+      </p>
+      <h2 className="mt-4 font-display text-3xl font-semibold tracking-[-0.02em] text-[var(--color-ink-strong)] leading-tight">
+        Your first inquiry will show up here.
+      </h2>
+      <p className="mt-3 text-sm text-[var(--color-ink-soft)] max-w-md mx-auto">
+        Share your portal URL with a customer or send yourself a test to see how it looks.
+      </p>
+    </div>
   );
 }
 
@@ -216,10 +289,6 @@ export default function DashboardPage() {
 /*                               Scrollable board                             */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Wraps the board in a horizontal scroller and fades the left/right edges
- * when there's more content off-screen. Silent when the whole board fits.
- */
 function ScrollableBoard({ children }: { children: React.ReactNode }) {
   const scrollerRef = React.useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = React.useState(false);
@@ -237,7 +306,6 @@ function ScrollableBoard({ children }: { children: React.ReactNode }) {
     window.addEventListener("resize", check);
     const observer = new ResizeObserver(check);
     observer.observe(el);
-    // Also observe the inner content so column count changes trigger a re-check
     if (el.firstElementChild) observer.observe(el.firstElementChild);
     return () => {
       el.removeEventListener("scroll", check);
@@ -276,12 +344,9 @@ function TopBar() {
   return (
     <header className="px-8 md:px-12 py-5 border-b border-[var(--color-line-subtle)] bg-[var(--color-surface)]">
       <div className="max-w-[1600px] mx-auto flex items-center justify-between">
-        <Link
-          href="/"
-          className="font-sans text-xs font-medium tracking-wide text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] transition-colors"
-        >
-          The Owner Toolkit
-        </Link>
+        <span className="font-sans text-xs font-medium tracking-wide text-[var(--color-ink-muted)]">
+          {portalConfig.businessName}
+        </span>
         <div className="flex items-center gap-2">
           <Link
             href="/portal"
@@ -451,7 +516,6 @@ function Column({
 
   return (
     <div className="w-[300px] shrink-0 flex flex-col">
-      {/* Column header */}
       <div className="flex items-center justify-between px-1 pb-4">
         <div className="flex items-center gap-2.5">
           <span
@@ -468,7 +532,6 @@ function Column({
         </span>
       </div>
 
-      {/* Column body */}
       <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
         <div
           ref={setNodeRef}
@@ -535,11 +598,13 @@ function InquiryCard({
   isOverlay?: boolean;
 }) {
   const isNew = inquiry.status === "new";
+  const summary = cardSummary(inquiry);
+
+  const title = inquiry.customerName || inquiry.customerEmail || "Anonymous";
+
   return (
     <div
       onClick={() => {
-        // Only fires for a genuine click. dnd-kit's activationConstraint
-        // (6px) prevents this from firing on drags.
         if (onOpen) onOpen(inquiry.id);
       }}
       onKeyDown={(e) => {
@@ -567,24 +632,28 @@ function InquiryCard({
 
       <div className="px-6 pt-5 pb-3">
         <h3 className="font-display text-lg font-semibold tracking-[-0.02em] text-[var(--color-ink-strong)] leading-tight">
-          {inquiry.customerName}
+          {title}
         </h3>
-        <p className="mt-1.5 text-[13px] font-medium text-[var(--color-ink-soft)] leading-snug">
-          {inquiry.serviceType}
-        </p>
+        {summary.subtitle ? (
+          <p className="mt-1.5 text-[13px] font-medium text-[var(--color-ink-soft)] leading-snug">
+            {summary.subtitle}
+          </p>
+        ) : null}
       </div>
-      <div className="px-6 pb-4">
-        <p className="text-[13px] text-[var(--color-ink-muted)] leading-snug line-clamp-2">
-          {inquiry.projectDetails}
-        </p>
-      </div>
+      {summary.body ? (
+        <div className="px-6 pb-4">
+          <p className="text-[13px] text-[var(--color-ink-muted)] leading-snug line-clamp-2">
+            {summary.body}
+          </p>
+        </div>
+      ) : null}
       <div className="mx-6 pb-5 pt-3 flex items-center justify-between gap-3 border-t border-[var(--color-line-subtle)]">
         <span className="text-[11px] text-[var(--color-ink-muted)] tabular-nums">
-          {relativeDate(inquiry.submittedAt)}
+          {relativeDate(inquiry.createdAt)}
         </span>
-        {inquiry.budget ? (
+        {summary.aside ? (
           <span className="text-[11px] font-medium tabular-nums text-[var(--color-ink)]">
-            {inquiry.budget}
+            {summary.aside}
           </span>
         ) : null}
       </div>
@@ -592,11 +661,83 @@ function InquiryCard({
   );
 }
 
+/**
+ * Compute a card's subtitle, body preview, and optional right-side aside
+ * from the current portal.config.ts. Deterministic rules:
+ *   - Subtitle = first enabled non-role short_answer answer.
+ *   - Body    = first enabled non-role long_answer answer (or the second
+ *               short answer if there's no long answer).
+ *   - Aside   = first enabled short_answer whose label suggests budget/price.
+ * Missing pieces are omitted.
+ */
+function cardSummary(inquiry: Inquiry): {
+  subtitle: string | null;
+  body: string | null;
+  aside: string | null;
+} {
+  const enabled = portalConfig.fields.filter((f) => f.enabled);
+
+  const shortAnswers = enabled.filter(
+    (f) => !f.role && f.type === "short_answer",
+  );
+  const longAnswers = enabled.filter(
+    (f) => !f.role && f.type === "long_answer",
+  );
+
+  const readString = (fieldId: string): string | null => {
+    const raw = inquiry.answers[fieldId];
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+    return null;
+  };
+
+  let subtitle: string | null = null;
+  for (const f of shortAnswers) {
+    const value = readString(f.id);
+    if (value) {
+      subtitle = value;
+      break;
+    }
+  }
+
+  let body: string | null = null;
+  for (const f of longAnswers) {
+    const value = readString(f.id);
+    if (value) {
+      body = value;
+      break;
+    }
+  }
+  if (!body) {
+    let found = 0;
+    for (const f of shortAnswers) {
+      const value = readString(f.id);
+      if (!value) continue;
+      found++;
+      if (found === 2) {
+        body = value;
+        break;
+      }
+    }
+  }
+
+  let aside: string | null = null;
+  for (const f of shortAnswers) {
+    if (!/budget|price|quote|cost/i.test(f.label)) continue;
+    const value = readString(f.id);
+    if (value) {
+      aside = value;
+      break;
+    }
+  }
+
+  return { subtitle, body, aside };
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                  Footer                                    */
 /* -------------------------------------------------------------------------- */
 
-function Footer({ onReset }: { onReset: () => void }) {
+function Footer() {
   return (
     <footer className="border-t border-[var(--color-line-subtle)] px-8 md:px-12 py-6 bg-[var(--color-surface)]">
       <div className="max-w-[1600px] mx-auto flex items-center justify-between text-xs text-[var(--color-ink-muted)]">
@@ -605,14 +746,6 @@ function Footer({ onReset }: { onReset: () => void }) {
           <span className="mx-2">·</span>
           <span>theownertoolkit.co</span>
         </div>
-        <button
-          type="button"
-          onClick={onReset}
-          className="text-[var(--color-ink-placeholder)] hover:text-[var(--color-ink-muted)] transition-colors"
-          title="Restore the sample inquiries"
-        >
-          Reset sample data
-        </button>
       </div>
     </footer>
   );

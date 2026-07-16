@@ -14,12 +14,10 @@ export const STATUS_ORDER: Status[] = [
  * appears on the board itself; cards and headers otherwise stay neutral.
  * Colors are used to signal outcome (won/lost) and attention (new/quoted),
  * not to decorate.
- */
-/**
+ *
  * Booked uses a restrained plum — considered, distinct from the other five
  * status colors, and readable at 8px. Not a full palette entry because it
- * only ever appears as a status dot; if a future primitive needs a matching
- * fill, promote it to the semantic tokens then.
+ * only ever appears as a status dot.
  */
 const BOOKED_PLUM = "hsl(292 32% 40%)";
 
@@ -35,25 +33,25 @@ export const STATUS_META: Record<
   lost: { label: "Lost", dotVar: "var(--color-semantic-danger)" },
 };
 
-export interface InquiryFile {
+export interface StoredFile {
   name: string;
-  size: string;
+  path: string;
+  size: number;
+  contentType: string;
 }
 
+/**
+ * The dashboard's view of an inquiry. Answers is the full jsonb from the
+ * database; individual fields are looked up by id at render time via the
+ * current portal.config.ts. Convenience columns from the database appear
+ * as top-level fields so the pipeline board doesn't touch jsonb.
+ */
 export interface Inquiry {
   id: string;
   status: Status;
-  customerName: string;
-  email: string;
-  phone?: string;
-  company?: string;
-  serviceType: string;
-  projectDetails: string;
-  budget?: string;
-  timeline?: string;
-  preferredContact?: string;
-  files?: InquiryFile[];
-  otherNotes?: string;
-  submittedAt: string; // ISO
-  ownerNotes: string; // private to the owner
+  customerName: string | null;
+  customerEmail: string | null;
+  customerPhone: string | null;
+  answers: Record<string, unknown>;
+  createdAt: string;
 }

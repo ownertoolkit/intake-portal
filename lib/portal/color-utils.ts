@@ -1,24 +1,21 @@
 /**
- * Color helpers for the setup wizard.
+ * Color helpers for the portal form and dashboard.
  *
- * Accepts either an `hsl(h s% l%)` string (from the curated palette) or a
- * `#rrggbb` hex string (from the custom picker) and computes the readable
- * text color for that background using WCAG relative luminance.
+ * Accepts either an `hsl(h s% l%)` string or a `#rrggbb` hex string and
+ * computes the readable text color for that background using WCAG relative
+ * luminance.
  *
- * Owner Toolkit rule: an owner cannot create an inaccessible portal. If the
- * chosen brand color would render white button text at contrast < 4.5:1,
- * we automatically use dark ink instead. The owner never has to think about
- * accessibility.
+ * Owner Toolkit rule: the portal must never render an inaccessible button.
+ * If the chosen brand color would render white text at contrast below 4.5:1
+ * we use dark ink instead. The owner does not have to think about this.
  */
 
 type Rgb = { r: number; g: number; b: number };
 
 const WHITE = "hsl(0 0% 100%)";
-const INK = "hsl(30 8% 10%)"; // matches --color-neutral-900
+const INK = "hsl(30 8% 10%)";
 
-/* -------------------------------- Parsing --------------------------------- */
-
-export function parseHex(input: string): Rgb | null {
+function parseHex(input: string): Rgb | null {
   const s = input.trim().replace(/^#/, "");
   if (!/^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$/.test(s)) return null;
   const full = s.length === 3 ? s.split("").map((c) => c + c).join("") : s;
@@ -30,19 +27,7 @@ export function parseHex(input: string): Rgb | null {
   };
 }
 
-export function isValidHex(input: string): boolean {
-  return parseHex(input) !== null;
-}
-
-export function normalizeHex(input: string): string {
-  const s = input.trim().replace(/^#/, "").toLowerCase();
-  if (!/^[0-9a-f]{3}$|^[0-9a-f]{6}$/.test(s)) return `#${s}`;
-  const full = s.length === 3 ? s.split("").map((c) => c + c).join("") : s;
-  return `#${full}`;
-}
-
 function parseHsl(input: string): Rgb | null {
-  // Accepts "hsl(220 52% 22%)" (modern space-separated syntax).
   const m = input.match(
     /^hsl\(\s*([0-9]+(?:\.[0-9]+)?)\s+([0-9]+(?:\.[0-9]+)?)%\s+([0-9]+(?:\.[0-9]+)?)%(?:\s*\/\s*[^)]+)?\s*\)$/i,
   );
@@ -77,14 +62,12 @@ function hueToRgb(p: number, q: number, t: number): number {
   return p;
 }
 
-export function parseColor(input: string): Rgb | null {
+function parseColor(input: string): Rgb | null {
   const trimmed = input.trim();
   if (trimmed.startsWith("#")) return parseHex(trimmed);
   if (trimmed.startsWith("hsl")) return parseHsl(trimmed);
   return null;
 }
-
-/* --------------------------------- WCAG ---------------------------------- */
 
 function toLinear(v: number): number {
   const s = v / 255;
@@ -95,7 +78,7 @@ function relativeLuminance({ r, g, b }: Rgb): number {
   return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 }
 
-export function contrastRatio(a: Rgb, b: Rgb): number {
+function contrastRatio(a: Rgb, b: Rgb): number {
   const la = relativeLuminance(a);
   const lb = relativeLuminance(b);
   const light = Math.max(la, lb);
@@ -104,22 +87,15 @@ export function contrastRatio(a: Rgb, b: Rgb): number {
 }
 
 const WHITE_RGB: Rgb = { r: 255, g: 255, b: 255 };
-const INK_RGB: Rgb = { r: 25, g: 24, b: 23 }; // approximation of --color-neutral-900
+const INK_RGB: Rgb = { r: 25, g: 24, b: 23 };
 
-/**
- * Pick the readable text color for a given background. Prefers white for
- * darker brands; falls back to ink for pale brands so a pastel doesn't
- * produce unreadable buttons.
- */
 export function readableTextOn(bg: string): {
   cssColor: string;
-  onLight: boolean; // true = ink text, false = white text
+  onLight: boolean;
   contrast: number;
 } {
   const rgb = parseColor(bg);
-  if (!rgb) {
-    return { cssColor: WHITE, onLight: false, contrast: 1 };
-  }
+  if (!rgb) return { cssColor: WHITE, onLight: false, contrast: 1 };
   const whiteContrast = contrastRatio(rgb, WHITE_RGB);
   const inkContrast = contrastRatio(rgb, INK_RGB);
   if (whiteContrast >= 4.5) {

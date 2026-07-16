@@ -1,11 +1,10 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
-import { Button, cn } from "@/lib/ui";
-import { readableTextOn } from "../setup/color-utils";
-import type { FormField } from "../setup/form-fields-editor";
-import { loadPortalConfig, type PortalConfig } from "./config";
+import { cn } from "@/lib/ui";
+import { portalConfig, type PortalField } from "@/lib/portal/config";
+import { readableTextOn } from "@/lib/portal/color-utils";
+import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 /* -------------------------------------------------------------------------- */
 /*                                    Page                                    */
@@ -14,102 +13,67 @@ import { loadPortalConfig, type PortalConfig } from "./config";
 /**
  * /portal — the real customer-facing portal.
  *
- * Reads the owner's configuration from localStorage (the wizard-to-portal
- * handoff; will be a Supabase read in v2) and renders the actual, working
- * intake form the customer sees. No Owner Toolkit branding anywhere — the
- * portal belongs to the business.
+ * Reads the owner's configuration directly from portal.config.ts (the file
+ * shipped in the ZIP by the Owner Toolkit customizer) and posts submissions
+ * to /api/inquiries. No Owner Toolkit branding — the portal belongs to the
+ * business.
  */
 export default function PortalPage() {
-  const [config, setConfig] = React.useState<PortalConfig | null | undefined>(
-    undefined,
-  );
   const [submitted, setSubmitted] = React.useState(false);
-
-  React.useEffect(() => {
-    setConfig(loadPortalConfig());
-  }, []);
-
-  // Loading (avoid hydration mismatch)
-  if (config === undefined) {
-    return <main className="min-h-screen bg-[var(--color-surface-canvas)]" />;
-  }
-
-  // No portal published yet
-  if (config === null) return <EmptyState />;
-
-  // Submitted — show success
-  if (submitted) return <SuccessScreen config={config} />;
-
-  return <PortalForm config={config} onSubmit={() => setSubmitted(true)} />;
-}
-
-/* -------------------------------------------------------------------------- */
-/*                                Empty state                                 */
-/* -------------------------------------------------------------------------- */
-
-function EmptyState() {
-  return (
-    <main className="min-h-screen bg-[var(--color-surface-canvas)] flex items-center justify-center px-6">
-      <div className="max-w-md text-center">
-        <p className="font-sans text-xs font-medium uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
-          Nothing here yet
-        </p>
-        <h1 className="mt-6 font-display text-4xl font-semibold tracking-[-0.02em] text-[var(--color-ink-strong)] leading-[1.05]">
-          This portal hasn't been created yet.
-        </h1>
-        <p className="mt-4 text-sm text-[var(--color-ink-soft)]">
-          Create yours in a few minutes.
-        </p>
-        <div className="mt-8 flex justify-center">
-          <Link href="/setup">
-            <Button size="lg">Create My Portal</Button>
-          </Link>
-        </div>
-      </div>
-    </main>
-  );
+  if (submitted) return <SuccessScreen />;
+  return <PortalForm onSubmit={() => setSubmitted(true)} />;
 }
 
 /* -------------------------------------------------------------------------- */
 /*                                Portal form                                 */
 /* -------------------------------------------------------------------------- */
 
-type Values = Record<string, string>;
+type StringValues = Record<string, string>;
+type FileValues = Record<string, File[]>;
 type Errors = Record<string, string | undefined>;
 
-function PortalForm({
-  config,
-  onSubmit,
-}: {
-  config: PortalConfig;
-  onSubmit: () => void;
-}) {
+const BUCKET = "inquiry-files";
+
+function PortalForm({ onSubmit }: { onSubmit: () => void }) {
   const enabledFields = React.useMemo(
-    () => config.fields.filter((f) => f.enabled),
-    [config.fields],
+    () => portalConfig.fields.filter((f) => f.enabled),
+    [],
   );
 
-  const [values, setValues] = React.useState<Values>(() => {
-    const initial: Values = {};
+  const [values, setValues] = React.useState<StringValues>(() => {
+    const initial: StringValues = {};
     enabledFields.forEach((f) => {
       initial[f.id] = "";
     });
     return initial;
   });
+  const [fileValues, setFileValues] = React.useState<FileValues>({});
   const [errors, setErrors] = React.useState<Errors>({});
   const [submitting, setSubmitting] = React.useState(false);
-  const firstErrorRef = React.useRef<HTMLElement | null>(null);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
 
-  const brandText = readableTextOn(config.color);
+  const brandText = readableTextOn(portalConfig.brandColor);
 
   const setValue = (id: string, value: string) => {
     setValues((prev) => ({ ...prev, [id]: value }));
     if (errors[id]) setErrors((prev) => ({ ...prev, [id]: undefined }));
   };
 
+  const setFiles = (id: string, files: File[]) => {
+    setFileValues((prev) => ({ ...prev, [id]: files }));
+    if (errors[id]) setErrors((prev) => ({ ...prev, [id]: undefined }));
+  };
+
   const validate = (): Errors => {
     const next: Errors = {};
     for (const f of enabledFields) {
+      if (f.type === "file_upload") {
+        const files = fileValues[f.id] ?? [];
+        if (f.required && files.length === 0) {
+          next[f.id] = "Please attach at least one file.";
+        }
+        continue;
+      }
       const raw = values[f.id] ?? "";
       const v = raw.trim();
       if (f.required && !v) {
@@ -119,49 +83,132 @@ function PortalForm({
       if (f.type === "email" && v && !/^\S+@\S+\.\S+$/.test(v)) {
         next[f.id] = "That doesn't look like a valid email.";
       }
+      if ((f.type === "multiple_choice" || f.type === "dropdown") && v) {
+        if (!(f.options ?? []).includes(v)) {
+          next[f.id] = "Please pick one of the listed options.";
+        }
+      }
     }
     return next;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const next = validate();
     setErrors(next);
-    const hasErrors = Object.values(next).some(Boolean);
-    if (hasErrors) {
-      // Scroll to first error field
+    setSubmitError(null);
+    if (Object.values(next).some(Boolean)) {
       requestAnimationFrame(() => {
         const first = document.querySelector<HTMLElement>("[data-field-error='true']");
         if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
       });
       return;
     }
+
     setSubmitting(true);
-    window.setTimeout(() => {
+    try {
+      const filesPayload: {
+        fieldId: string;
+        filename: string;
+        contentType: string;
+        size: number;
+      }[] = [];
+      for (const [fieldId, files] of Object.entries(fileValues)) {
+        for (const file of files) {
+          filesPayload.push({
+            fieldId,
+            filename: file.name,
+            contentType: file.type || "application/octet-stream",
+            size: file.size,
+          });
+        }
+      }
+
+      const response = await fetch("/api/inquiries", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ answers: values, files: filesPayload }),
+      });
+
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          details?: { fieldId: string; message: string }[];
+        };
+        if (body.details) {
+          const serverErrors: Errors = {};
+          for (const d of body.details) serverErrors[d.fieldId] = d.message;
+          setErrors(serverErrors);
+        }
+        setSubmitError(body.error ?? "Something went wrong. Please try again.");
+        setSubmitting(false);
+        return;
+      }
+
+      const result = (await response.json()) as {
+        ok: true;
+        inquiryId: string;
+        uploads: { fieldId: string; filename: string; path: string; token: string }[];
+      };
+
+      if (result.uploads.length > 0) {
+        const supabase = createSupabaseBrowserClient();
+        // Match each upload back to its File by filename + field id order.
+        const uploadTasks: Promise<unknown>[] = [];
+        for (const [fieldId, files] of Object.entries(fileValues)) {
+          const uploadsForField = result.uploads.filter((u) => u.fieldId === fieldId);
+          for (let i = 0; i < files.length && i < uploadsForField.length; i++) {
+            const upload = uploadsForField[i]!;
+            const file = files[i]!;
+            uploadTasks.push(
+              supabase.storage
+                .from(BUCKET)
+                .uploadToSignedUrl(upload.path, upload.token, file, {
+                  contentType: file.type || "application/octet-stream",
+                }),
+            );
+          }
+        }
+        // If uploads fail we still confirm the inquiry — the row exists with
+        // the file paths, so the dashboard will surface any missing files.
+        await Promise.allSettled(uploadTasks);
+      }
+
       onSubmit();
-    }, 700);
+    } catch (err) {
+      console.error(err);
+      setSubmitError("Something went wrong. Please try again.");
+      setSubmitting(false);
+    }
   };
 
   return (
     <main
       className="min-h-screen bg-[var(--color-surface-canvas)]"
-      // Scope brand color as a CSS var so focus rings and other accents pick it up.
-      style={{ ["--brand-color" as string]: config.color }}
+      style={{ ["--brand-color" as string]: portalConfig.brandColor }}
     >
       <div className="max-w-[560px] mx-auto px-6 md:px-8 pt-16 md:pt-24 pb-24">
-        <PortalHeader config={config} />
+        <PortalHeader />
 
         <form onSubmit={handleSubmit} className="mt-14 space-y-10" noValidate>
           {enabledFields.map((field) => (
-            <PortalField
+            <FieldRow
               key={field.id}
               field={field}
               value={values[field.id] ?? ""}
+              files={fileValues[field.id] ?? []}
               error={errors[field.id]}
-              onChange={(v) => setValue(field.id, v)}
-              brandColor={config.color}
+              onChangeValue={(v) => setValue(field.id, v)}
+              onChangeFiles={(f) => setFiles(field.id, f)}
+              brandColor={portalConfig.brandColor}
             />
           ))}
+
+          {submitError ? (
+            <p className="text-sm text-[var(--color-semantic-danger-strong)]">
+              {submitError}
+            </p>
+          ) : null}
 
           <div className="pt-4">
             <button
@@ -174,7 +221,7 @@ function PortalForm({
                 "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--brand-color)]/24",
               )}
               style={{
-                backgroundColor: config.color,
+                backgroundColor: portalConfig.brandColor,
                 color: brandText.cssColor,
               }}
             >
@@ -191,44 +238,49 @@ function PortalForm({
 /*                                   Header                                   */
 /* -------------------------------------------------------------------------- */
 
-function PortalHeader({ config }: { config: PortalConfig }) {
+function PortalHeader() {
+  const logo = portalConfig.logo;
   return (
     <header className="flex flex-col items-center text-center">
-      {config.logoDataUrl ? (
+      {logo ? (
         <div className="mb-6">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={config.logoDataUrl}
-            alt=""
+            src={logo.path}
+            alt={logo.alt}
             className="h-14 md:h-16 w-auto object-contain"
           />
         </div>
       ) : null}
       <h1 className="font-display text-3xl md:text-5xl font-semibold tracking-[-0.02em] text-[var(--color-ink-strong)] leading-[1.05]">
-        {config.businessName}
+        {portalConfig.businessName}
       </h1>
       <p className="mt-5 max-w-md text-base md:text-lg text-[var(--color-ink-soft)] leading-relaxed">
-        {config.welcomeMessage}
+        {portalConfig.welcomeMessage}
       </p>
     </header>
   );
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                Portal field                                */
+/*                                  Field row                                 */
 /* -------------------------------------------------------------------------- */
 
-function PortalField({
+function FieldRow({
   field,
   value,
+  files,
   error,
-  onChange,
+  onChangeValue,
+  onChangeFiles,
   brandColor,
 }: {
-  field: FormField;
+  field: PortalField;
   value: string;
+  files: File[];
   error?: string;
-  onChange: (v: string) => void;
+  onChangeValue: (v: string) => void;
+  onChangeFiles: (files: File[]) => void;
   brandColor: string;
 }) {
   const inputId = `portal-${field.id}`;
@@ -252,7 +304,9 @@ function PortalField({
         field={field}
         inputId={inputId}
         value={value}
-        onChange={onChange}
+        files={files}
+        onChangeValue={onChangeValue}
+        onChangeFiles={onChangeFiles}
         brandColor={brandColor}
         hasError={hasError}
       />
@@ -281,14 +335,18 @@ function FieldInput({
   field,
   inputId,
   value,
-  onChange,
+  files,
+  onChangeValue,
+  onChangeFiles,
   brandColor,
   hasError,
 }: {
-  field: FormField;
+  field: PortalField;
   inputId: string;
   value: string;
-  onChange: (v: string) => void;
+  files: File[];
+  onChangeValue: (v: string) => void;
+  onChangeFiles: (files: File[]) => void;
   brandColor: string;
   hasError: boolean;
 }) {
@@ -303,7 +361,7 @@ function FieldInput({
           id={inputId}
           rows={4}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChangeValue(e.target.value)}
           className={cn(baseInput, "h-auto py-3 leading-relaxed resize-y", border, focusRing)}
         />
       );
@@ -317,7 +375,7 @@ function FieldInput({
           autoComplete="email"
           spellCheck={false}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChangeValue(e.target.value)}
           className={cn(baseInput, border, focusRing)}
         />
       );
@@ -330,7 +388,7 @@ function FieldInput({
           inputMode="tel"
           autoComplete="tel"
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChangeValue(e.target.value)}
           className={cn(baseInput, border, focusRing)}
         />
       );
@@ -341,7 +399,7 @@ function FieldInput({
           id={inputId}
           type="date"
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChangeValue(e.target.value)}
           className={cn(baseInput, border, focusRing)}
         />
       );
@@ -352,7 +410,7 @@ function FieldInput({
           <select
             id={inputId}
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => onChangeValue(e.target.value)}
             className={cn(
               baseInput,
               border,
@@ -405,7 +463,7 @@ function FieldInput({
                   name={inputId}
                   value={opt}
                   checked={selected}
-                  onChange={() => onChange(opt)}
+                  onChange={() => onChangeValue(opt)}
                   className="sr-only"
                 />
                 <span
@@ -441,8 +499,8 @@ function FieldInput({
       return (
         <FileField
           inputId={inputId}
-          value={value}
-          onChange={onChange}
+          files={files}
+          onChange={onChangeFiles}
           brandColor={brandColor}
         />
       );
@@ -454,7 +512,7 @@ function FieldInput({
           id={inputId}
           type="text"
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChangeValue(e.target.value)}
           className={cn(baseInput, border, focusRing)}
         />
       );
@@ -467,51 +525,69 @@ function FieldInput({
 
 function FileField({
   inputId,
-  value,
+  files,
   onChange,
   brandColor,
 }: {
   inputId: string;
-  value: string;
-  onChange: (v: string) => void;
+  files: File[];
+  onChange: (files: File[]) => void;
   brandColor: string;
 }) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = React.useState(false);
-  const fileName = value || "";
 
-  const handleFiles = (files: FileList | null | undefined) => {
-    if (!files || !files.length) return;
-    const names = Array.from(files)
-      .map((f) => f.name)
-      .join(", ");
-    onChange(names);
+  const addFiles = (incoming: FileList | null | undefined) => {
+    if (!incoming || !incoming.length) return;
+    const merged = [...files, ...Array.from(incoming)];
+    onChange(merged);
   };
 
-  if (fileName) {
+  const removeAt = (index: number) => {
+    onChange(files.filter((_, i) => i !== index));
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  if (files.length > 0) {
     return (
-      <div className="flex items-center gap-4 p-4 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)]">
-        <div
-          className="h-10 w-10 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
-          style={{ backgroundColor: brandColor, color: readableTextOn(brandColor).cssColor }}
-        >
-          <FileGlyph />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-[var(--color-ink-strong)] truncate">
-            {fileName}
-          </p>
-          <p className="text-xs text-[var(--color-ink-muted)] mt-0.5">Ready to send</p>
-        </div>
+      <div className="flex flex-col gap-2">
+        {files.map((f, i) => (
+          <div
+            key={`${f.name}-${i}`}
+            className="flex items-center gap-4 p-4 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)]"
+          >
+            <div
+              className="h-10 w-10 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
+              style={{
+                backgroundColor: brandColor,
+                color: readableTextOn(brandColor).cssColor,
+              }}
+            >
+              <FileGlyph />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-[var(--color-ink-strong)] truncate">
+                {f.name}
+              </p>
+              <p className="text-xs text-[var(--color-ink-muted)] mt-0.5">
+                {formatSize(f.size)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => removeAt(i)}
+              className="text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] px-2 py-1 rounded-[var(--radius-sm)]"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
         <button
           type="button"
-          onClick={() => {
-            onChange("");
-            if (inputRef.current) inputRef.current.value = "";
-          }}
-          className="text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] px-2 py-1 rounded-[var(--radius-sm)]"
+          onClick={() => inputRef.current?.click()}
+          className="self-start text-xs font-medium text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] px-2 py-1"
         >
-          Remove
+          Add another
         </button>
         <input
           ref={inputRef}
@@ -519,7 +595,7 @@ function FileField({
           type="file"
           multiple
           className="hidden"
-          onChange={(e) => handleFiles(e.target.files)}
+          onChange={(e) => addFiles(e.target.files)}
         />
       </div>
     );
@@ -545,7 +621,7 @@ function FileField({
         onDrop={(e) => {
           e.preventDefault();
           setIsDragging(false);
-          handleFiles(e.dataTransfer.files);
+          addFiles(e.dataTransfer.files);
         }}
         className={cn(
           "flex flex-col items-center justify-center text-center cursor-pointer",
@@ -570,36 +646,45 @@ function FileField({
         type="file"
         multiple
         className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
+        onChange={(e) => addFiles(e.target.files)}
       />
     </div>
   );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /* -------------------------------------------------------------------------- */
 /*                               Success screen                               */
 /* -------------------------------------------------------------------------- */
 
-function SuccessScreen({ config }: { config: PortalConfig }) {
-  const brandText = readableTextOn(config.color);
+function SuccessScreen() {
+  const brandText = readableTextOn(portalConfig.brandColor);
   return (
     <main className="min-h-screen bg-[var(--color-surface-canvas)] flex items-center justify-center px-6">
       <div className="max-w-md text-center">
         <div
           className="mx-auto h-16 w-16 rounded-full flex items-center justify-center"
-          style={{ backgroundColor: config.color, color: brandText.cssColor }}
+          style={{
+            backgroundColor: portalConfig.brandColor,
+            color: brandText.cssColor,
+          }}
         >
           <CheckGlyph />
         </div>
         <p className="mt-8 font-sans text-xs font-medium uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
-          {config.businessName}
+          {portalConfig.businessName}
         </p>
         <h1 className="mt-4 font-display text-5xl font-semibold tracking-[-0.03em] text-[var(--color-ink-strong)] leading-[0.98]">
           Thanks.
         </h1>
         <p className="mt-6 text-base text-[var(--color-ink-soft)] leading-relaxed">
-          We got your inquiry. {config.businessName} will be in touch within a
-          business day.
+          We got your inquiry. {portalConfig.businessName} will be in touch
+          within a business day.
         </p>
       </div>
     </main>
@@ -678,3 +763,4 @@ function CheckGlyph() {
     </svg>
   );
 }
+
