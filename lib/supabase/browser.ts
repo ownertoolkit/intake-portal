@@ -8,15 +8,14 @@ import { createBrowserClient } from "@supabase/ssr";
  *
  * Owner-authenticated calls carry the user's JWT cookie automatically; RLS
  * policies then evaluate `is_owner()` against that JWT.
+ *
+ * Missing env vars are tolerated at construction time so Next.js can
+ * statically prerender client-component pages during a first build before
+ * the Vercel–Supabase integration has set the vars. Actual network calls
+ * still fail loudly at runtime — the placeholder URL does not resolve.
  */
 export function createSupabaseBrowserClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) {
-    throw new Error(
-      "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY. " +
-        "The Vercel–Supabase integration sets these automatically.",
-    );
-  }
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
   return createBrowserClient(url, key);
 }
