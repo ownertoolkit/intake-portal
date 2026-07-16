@@ -1,67 +1,116 @@
 "use client";
 
 import * as React from "react";
-import { useSearchParams } from "next/navigation";
 import { Button, cn } from "@/lib/ui";
 import { portalConfig } from "@/lib/portal/config";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
+type Mode = "loading" | "signup" | "signin";
+
 /**
- * /login — magic link sign-in for the portal owner.
+ * /login — email + password sign-in for the portal owner.
  *
- * First person to complete this flow becomes the owner (see
- * /auth/callback). Everyone else is signed out with a friendly message.
+ * On mount, asks the server whether this portal has an owner yet:
+ *   - No owner  → "Create your owner account" form. First-signup-wins.
+ *   - Has owner → "Sign in" form. Password only; if credentials don't
+ *                 belong to the owner, we sign them right back out.
+ *   - You are the owner (already signed in) → straight to /dashboard.
  */
 export default function LoginPage() {
-  return (
-    <React.Suspense fallback={<main className="min-h-screen bg-[var(--color-surface-canvas)]" />}>
-      <LoginForm />
-    </React.Suspense>
-  );
-}
-
-function LoginForm() {
-  const searchParams = useSearchParams();
+  const [mode, setMode] = React.useState<Mode>("loading");
   const [email, setEmail] = React.useState("");
-  const [status, setStatus] = React.useState<"idle" | "sending" | "sent" | "error">(
-    "idle",
-  );
-  const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+  const [password, setPassword] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
 
-  const initialError = searchParams.get("error");
-  const nextUrl = searchParams.get("next") ?? "/dashboard";
-
-  const banner = React.useMemo(() => bannerFor(initialError), [initialError]);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/status", { cache: "no-store" });
+        if (!res.ok) {
+          if (!cancelled) setMode("signup"); // conservative fallback
+          return;
+        }
+        const { hasOwner, isOwner } = (await res.json()) as {
+          hasOwner: boolean;
+          isOwner: boolean;
+        };
+        if (cancelled) return;
+        if (isOwner) {
+          window.location.href = "/dashboard";
+          return;
+        }
+        setMode(hasOwner ? "signin" : "signup");
+      } catch {
+        if (!cancelled) setMode("signup");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = email.trim();
-    if (!/^\S+@\S+\.\S+$/.test(trimmed)) {
-      setErrorMessage("Please enter a valid email.");
-      setStatus("error");
-      return;
-    }
-    setStatus("sending");
-    setErrorMessage(null);
-
+    setBusy(true);
+    setError(null);
     try {
+      if (mode === "signup") {
+        const res = await fetch("/api/auth/signup", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: email.trim(), password }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          setError(body.error ?? "Could not create your account.");
+          setBusy(false);
+          return;
+        }
+        window.location.href = "/dashboard";
+        return;
+      }
+
+      // signin
       const supabase = createSupabaseBrowserClient();
-      const redirectTo = new URL("/auth/callback", window.location.origin);
-      redirectTo.searchParams.set("next", nextUrl);
-      const { error } = await supabase.auth.signInWithOtp({
-        email: trimmed,
-        options: {
-          emailRedirectTo: redirectTo.toString(),
-        },
+      const { error: signInErr } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
       });
-      if (error) throw error;
-      setStatus("sent");
+      if (signInErr) {
+        setError(friendlySignInError(signInErr.message));
+        setBusy(false);
+        return;
+      }
+
+      // Verify the signed-in user is actually the owner of THIS portal.
+      // (Someone could technically hold a valid Supabase login for a
+      // different email; we don't want to leak the "logged in but not
+      // authorized" state past this point.)
+      const statusRes = await fetch("/api/auth/status", { cache: "no-store" });
+      const status = (await statusRes.json().catch(() => ({ isOwner: false }))) as {
+        isOwner?: boolean;
+      };
+      if (!status.isOwner) {
+        await supabase.auth.signOut();
+        setError(
+          "That account isn't the owner of this portal. Sign in with the email you originally created the portal with.",
+        );
+        setBusy(false);
+        return;
+      }
+      window.location.href = "/dashboard";
     } catch (err) {
       console.error(err);
-      setErrorMessage(err instanceof Error ? err.message : "Could not send the sign-in link.");
-      setStatus("error");
+      setError("Something went wrong. Please try again.");
+      setBusy(false);
     }
   };
+
+  if (mode === "loading") {
+    return <main className="min-h-screen bg-[var(--color-surface-canvas)]" />;
+  }
 
   return (
     <main className="min-h-screen bg-[var(--color-surface-canvas)] flex flex-col">
@@ -71,93 +120,90 @@ function LoginForm() {
             {portalConfig.businessName}
           </p>
           <h1 className="mt-6 font-display text-4xl md:text-5xl font-semibold tracking-[-0.02em] text-[var(--color-ink-strong)] leading-[1.05] text-center">
-            Sign in
+            {mode === "signup" ? "Claim your portal" : "Sign in"}
           </h1>
           <p className="mt-5 text-center text-[15px] text-[var(--color-ink-soft)] leading-relaxed">
-            We'll email you a link to open your dashboard.
+            {mode === "signup"
+              ? "Create the owner account. Whoever completes this first becomes the permanent owner of this portal."
+              : "Sign in to your inquiry dashboard."}
           </p>
 
-          {banner ? (
-            <p
-              className={cn(
-                "mt-8 rounded-[var(--radius-md)] border px-4 py-3 text-sm",
-                "border-[var(--color-semantic-warning)] bg-[var(--color-semantic-warning-subtle)] text-[var(--color-semantic-warning-strong)]",
-              )}
-            >
-              {banner}
-            </p>
-          ) : null}
+          <form onSubmit={handleSubmit} className="mt-10 space-y-5" noValidate>
+            <label className="block">
+              <span className="text-sm font-medium text-[var(--color-ink-strong)]">
+                Email
+              </span>
+              <input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                autoFocus
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className="mt-2 w-full h-12 px-3.5 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] text-sm text-[var(--color-ink)] placeholder:text-[var(--color-ink-placeholder)] focus-visible:outline-none focus-visible:border-[var(--color-line-focus)] focus-visible:ring-[3px] focus-visible:ring-[var(--color-line-focus)]/20"
+              />
+            </label>
 
-          {status === "sent" ? (
-            <div className="mt-10 text-center">
-              <p className="font-display text-2xl font-semibold tracking-[-0.01em] text-[var(--color-ink-strong)]">
-                Check your inbox.
-              </p>
-              <p className="mt-3 text-sm text-[var(--color-ink-soft)] leading-relaxed">
-                A sign-in link is on its way to{" "}
-                <span className="font-medium text-[var(--color-ink)]">{email.trim()}</span>.
-                Click it to open your dashboard.
-              </p>
-              <button
-                type="button"
-                onClick={() => setStatus("idle")}
-                className="mt-6 text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
-              >
-                Use a different email
-              </button>
-            </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="mt-10 space-y-5" noValidate>
-              <label className="block">
-                <span className="text-sm font-medium text-[var(--color-ink-strong)]">
-                  Email
-                </span>
-                <input
-                  type="email"
-                  inputMode="email"
-                  autoComplete="email"
-                  autoFocus
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="mt-2 w-full h-12 px-3.5 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] text-sm text-[var(--color-ink)] placeholder:text-[var(--color-ink-placeholder)] focus-visible:outline-none focus-visible:border-[var(--color-line-focus)] focus-visible:ring-[3px] focus-visible:ring-[var(--color-line-focus)]/20"
-                />
-              </label>
-
-              {status === "error" && errorMessage ? (
-                <p className="text-xs text-[var(--color-semantic-danger-strong)]">
-                  {errorMessage}
+            <label className="block">
+              <span className="text-sm font-medium text-[var(--color-ink-strong)]">
+                Password
+              </span>
+              <input
+                type="password"
+                autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={mode === "signup" ? 10 : undefined}
+                className="mt-2 w-full h-12 px-3.5 rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] text-sm text-[var(--color-ink)] placeholder:text-[var(--color-ink-placeholder)] focus-visible:outline-none focus-visible:border-[var(--color-line-focus)] focus-visible:ring-[3px] focus-visible:ring-[var(--color-line-focus)]/20"
+              />
+              {mode === "signup" ? (
+                <p className="mt-2 text-xs text-[var(--color-ink-muted)]">
+                  At least 10 characters. A password manager is a good idea.
                 </p>
               ) : null}
+            </label>
 
-              <Button
-                type="submit"
-                size="lg"
-                className="w-full"
-                disabled={status === "sending"}
+            {error ? (
+              <p
+                className={cn(
+                  "rounded-[var(--radius-md)] border px-3.5 py-2.5 text-sm",
+                  "border-[var(--color-semantic-danger)] bg-[var(--color-semantic-danger-subtle)] text-[var(--color-semantic-danger-strong)]",
+                )}
               >
-                {status === "sending" ? "Sending…" : "Send sign-in link"}
-              </Button>
-            </form>
-          )}
+                {error}
+              </p>
+            ) : null}
+
+            <Button type="submit" size="lg" className="w-full" disabled={busy}>
+              {busy
+                ? mode === "signup"
+                  ? "Creating your account…"
+                  : "Signing in…"
+                : mode === "signup"
+                  ? "Create owner account"
+                  : "Sign in"}
+            </Button>
+          </form>
+
+          {mode === "signin" ? (
+            <p className="mt-6 text-center text-xs text-[var(--color-ink-muted)] leading-relaxed">
+              Lost your password? Contact the person who set this portal up for you.
+            </p>
+          ) : null}
         </div>
       </div>
     </main>
   );
 }
 
-function bannerFor(code: string | null): string | null {
-  if (!code) return null;
-  switch (code) {
-    case "already_claimed":
-      return "This portal has already been claimed by another owner. If that's you, sign in from the same email you used the first time.";
-    case "exchange_failed":
-    case "missing_code":
-      return "That sign-in link isn't valid anymore. Send a new one below.";
-    case "no_user":
-    case "lookup_failed":
-    case "claim_failed":
-      return "Something went wrong while signing you in. Please try again.";
-    default:
-      return null;
+function friendlySignInError(message: string): string {
+  if (/Invalid login credentials/i.test(message)) {
+    return "That email and password don't match. Try again.";
   }
+  if (/Email not confirmed/i.test(message)) {
+    return "This account hasn't been confirmed yet. Check your inbox.";
+  }
+  return message || "Could not sign in. Please try again.";
 }
