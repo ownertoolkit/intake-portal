@@ -349,7 +349,7 @@ function TopBar() {
         </span>
         <div className="flex items-center gap-2">
           <Link
-            href="/portal"
+            href="/"
             target="_blank"
             rel="noopener"
             className="inline-flex items-center gap-1.5 h-8 px-3 rounded-[var(--radius-md)] text-xs font-medium text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:bg-[var(--color-surface-sunken)] transition-colors"
