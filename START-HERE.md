@@ -36,7 +36,7 @@ You'll create **three free accounts** along the way:
 1. Open **[ChatGPT](https://chatgpt.com)** in your web browser. A free ChatGPT account is fine to use.
 2. Start a new conversation.
 3. **Drag this entire folder** into the ChatGPT message box to upload it. (Yes, ChatGPT can read folders.)
-4. Open the file called **`INSTALLATION-PROMPT.md`** in this folder. Select all of the text inside, copy it, and paste it into ChatGPT. Then send.
+4. Open the file called **`INSTALL-WITH-CHATGPT.md`** in this folder. Select all of the text inside, copy it, and paste it into ChatGPT. Then send.
 5. ChatGPT will take it from there and walk you through every step, one at a time.
 
 ## If ChatGPT ever gets confusing
