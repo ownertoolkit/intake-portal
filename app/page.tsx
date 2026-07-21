@@ -3,7 +3,6 @@
 import * as React from "react";
 import { cn } from "@/lib/ui";
 import { portalConfig, type PortalField } from "@/lib/portal/config";
-import { readableTextOn } from "@/lib/portal/color-utils";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 /* -------------------------------------------------------------------------- */
@@ -51,8 +50,6 @@ function PortalForm({ onSubmit }: { onSubmit: () => void }) {
   const [errors, setErrors] = React.useState<Errors>({});
   const [submitting, setSubmitting] = React.useState(false);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
-
-  const brandText = readableTextOn(portalConfig.brandColor);
 
   const setValue = (id: string, value: string) => {
     setValues((prev) => ({ ...prev, [id]: value }));
@@ -222,7 +219,7 @@ function PortalForm({ onSubmit }: { onSubmit: () => void }) {
               )}
               style={{
                 backgroundColor: portalConfig.brandColor,
-                color: brandText.cssColor,
+                color: "#ffffff",
               }}
             >
               {submitting ? "Sending…" : "Send inquiry"}
@@ -560,7 +557,7 @@ function FileField({
               className="h-10 w-10 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0"
               style={{
                 backgroundColor: brandColor,
-                color: readableTextOn(brandColor).cssColor,
+                color: "#ffffff",
               }}
             >
               <FileGlyph />
@@ -663,7 +660,6 @@ function formatSize(bytes: number): string {
 /* -------------------------------------------------------------------------- */
 
 function SuccessScreen() {
-  const brandText = readableTextOn(portalConfig.brandColor);
   return (
     <main className="min-h-screen bg-[var(--color-surface-canvas)] flex items-center justify-center px-6">
       <div className="max-w-md text-center">
@@ -671,7 +667,7 @@ function SuccessScreen() {
           className="mx-auto h-16 w-16 rounded-full flex items-center justify-center"
           style={{
             backgroundColor: portalConfig.brandColor,
-            color: brandText.cssColor,
+            color: "#ffffff",
           }}
         >
           <CheckGlyph />
