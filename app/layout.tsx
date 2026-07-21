@@ -1,5 +1,11 @@
 import type { Metadata } from "next";
-import { Inter, Plus_Jakarta_Sans } from "next/font/google";
+import {
+  Inter,
+  Plus_Jakarta_Sans,
+  Playfair_Display,
+  Bodoni_Moda,
+  DM_Serif_Display,
+} from "next/font/google";
 import "./globals.css";
 
 const inter = Inter({
@@ -14,6 +20,25 @@ const jakarta = Plus_Jakarta_Sans({
   display: "swap",
 });
 
+const playfair = Playfair_Display({
+  subsets: ["latin"],
+  variable: "--font-playfair",
+  display: "swap",
+});
+
+const bodoni = Bodoni_Moda({
+  subsets: ["latin"],
+  variable: "--font-bodoni",
+  display: "swap",
+});
+
+const dmSerif = DM_Serif_Display({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-dm-serif",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "Customer Intake Portal — The Owner Toolkit",
   description:
@@ -22,7 +47,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${jakarta.variable}`}>
+    <html
+      lang="en"
+      className={`${inter.variable} ${jakarta.variable} ${playfair.variable} ${bodoni.variable} ${dmSerif.variable}`}
+    >
       <body>{children}</body>
     </html>
   );

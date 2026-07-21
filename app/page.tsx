@@ -181,8 +181,11 @@ function PortalForm({ onSubmit }: { onSubmit: () => void }) {
 
   return (
     <main
-      className="min-h-screen bg-[var(--color-surface-canvas)]"
-      style={{ ["--brand-color" as string]: portalConfig.brandColor }}
+      className="min-h-screen"
+      style={{
+        ["--brand-color" as string]: portalConfig.brandColor,
+        backgroundColor: portalConfig.backgroundColor,
+      }}
     >
       <div className="max-w-[560px] mx-auto px-6 md:px-8 pt-16 md:pt-24 pb-24">
         <PortalHeader />
@@ -235,8 +238,22 @@ function PortalForm({ onSubmit }: { onSubmit: () => void }) {
 /*                                   Header                                   */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Font-family stack for each `businessNameFont` config value. Every font is
+ * loaded in app/layout.tsx via next/font/google, exposing a CSS variable we
+ * reference here.
+ */
+const BUSINESS_NAME_FONT: Record<string, string> = {
+  jakarta: "var(--font-jakarta), ui-sans-serif, system-ui, sans-serif",
+  playfair: "var(--font-playfair), Georgia, serif",
+  bodoni: "var(--font-bodoni), Georgia, serif",
+  "dm-serif": "var(--font-dm-serif), Georgia, serif",
+};
+
 function PortalHeader() {
   const logo = portalConfig.logo;
+  const fontFamily =
+    BUSINESS_NAME_FONT[portalConfig.businessNameFont] ?? BUSINESS_NAME_FONT.jakarta;
   return (
     <header className="flex flex-col items-center text-center">
       {logo ? (
@@ -249,7 +266,10 @@ function PortalHeader() {
           />
         </div>
       ) : null}
-      <h1 className="font-display text-3xl md:text-5xl font-semibold tracking-[-0.02em] text-[var(--color-ink-strong)] leading-[1.05]">
+      <h1
+        className="text-3xl md:text-5xl font-semibold tracking-[-0.02em] text-[var(--color-ink-strong)] leading-[1.05]"
+        style={{ fontFamily }}
+      >
         {portalConfig.businessName}
       </h1>
       <p className="mt-5 max-w-md text-base md:text-lg text-[var(--color-ink-soft)] leading-relaxed">
@@ -661,7 +681,10 @@ function formatSize(bytes: number): string {
 
 function SuccessScreen() {
   return (
-    <main className="min-h-screen bg-[var(--color-surface-canvas)] flex items-center justify-center px-6">
+    <main
+      className="min-h-screen flex items-center justify-center px-6"
+      style={{ backgroundColor: portalConfig.backgroundColor }}
+    >
       <div className="max-w-md text-center">
         <div
           className="mx-auto h-16 w-16 rounded-full flex items-center justify-center"

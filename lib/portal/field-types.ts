@@ -42,9 +42,17 @@ export interface PortalLogo {
   alt: string;
 }
 
+/** Font family for the business-name H1 at the top of the portal. */
+export type BusinessNameFont = "jakarta" | "playfair" | "bodoni" | "dm-serif";
+
 export interface PortalConfigShape {
   businessName: string;
+  /** Font family for the business-name headline at the top of the portal. */
+  businessNameFont: BusinessNameFont;
+  /** Hex color of the submit button. Text is always white on the button. */
   brandColor: string;
+  /** Hex color of the portal page background. */
+  backgroundColor: string;
   welcomeMessage: string;
   logo: PortalLogo | null;
   fields: PortalField[];
