@@ -187,7 +187,17 @@ function PortalForm({ onSubmit }: { onSubmit: () => void }) {
         backgroundColor: portalConfig.backgroundColor,
       }}
     >
-      <div className="max-w-[560px] mx-auto px-6 md:px-8 pt-16 md:pt-24 pb-24">
+      {/* Owner sign-in link. Subtle by design — customers ignore it;
+          the owner uses it to reach /login from their own homepage. */}
+      <div className="max-w-[1200px] mx-auto px-6 md:px-8 pt-5 flex justify-end">
+        <a
+          href="/login"
+          className="text-xs font-medium tracking-wide text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] transition-colors"
+        >
+          Sign in
+        </a>
+      </div>
+      <div className="max-w-[560px] mx-auto px-6 md:px-8 pt-10 md:pt-16 pb-24">
         <PortalHeader />
 
         <form onSubmit={handleSubmit} className="mt-14 space-y-10" noValidate>
